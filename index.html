@@ -4,6 +4,10 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Tesorería 7° Básico D – San Ignacio El Bosque</title>
+<!-- Firebase SDK -->
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
+
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:wght@400;600;700&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
 <style>
   :root {
@@ -229,6 +233,7 @@
       <div class="topbar-logo">Tesorería 7° Básico D <span>San Ignacio El Bosque</span></div>
     </div>
     <div class="topbar-right">
+      <span id="sync-indicator" style="font-size:.75rem;opacity:.7;display:flex;align-items:center;gap:4px"><span id="sync-dot" style="width:7px;height:7px;border-radius:50%;background:#4ade80;display:inline-block"></span><span id="sync-text">En línea</span></span>
       <span class="badge-delegado" id="badge-user"></span>
       <button class="btn-sm" onclick="doLogout()">Salir</button>
     </div>
@@ -490,7 +495,18 @@
 // ═══════════════════════════════════════════════
 //  DATA LAYER
 // ═══════════════════════════════════════════════
-const STORAGE_KEY = 'tesoreria_7d_sib';
+// ═══════════════════════════════════════════════
+//  FIREBASE CONFIG — reemplaza con tus valores
+// ═══════════════════════════════════════════════
+const FIREBASE_CONFIG = {
+  apiKey:            "AIzaSyCbX1RqTEZzcCKqe4SXFdAmlkLRdXlNPdI",
+  authDomain:        "tesoreria-7-d.firebaseapp.com",
+  projectId:         "tesoreria-7-d",
+  storageBucket:     "tesoreria-7-d.firebasestorage.app",
+  messagingSenderId: "482457695719",
+  appId:             "1:482457695719:web:665ab237f44b87babeb942"
+};
+const DB_DOC = "7mo-basico-d"; // identificador único del curso
 
 const defaultData = {
   delegados: [
@@ -542,24 +558,138 @@ const defaultData = {
   log: []
 };
 
-function loadData() {
+// Firebase references
+let firestore = null;
+let docRef = null;
+let saveTimer = null;
+
+async function initFirebase() {
+  showLoading(true, "Conectando con la nube...");
   try {
-    const saved = JSON.parse(localStorage.getItem(STORAGE_KEY));
-    if (!saved) return JSON.parse(JSON.stringify(defaultData));
-    // Migrate: ensure new fields exist in old saved data
-    if (!saved.ingresosExtras) saved.ingresosExtras = [];
-    if (saved.saldoInicial === undefined) saved.saldoInicial = 0;
-    return saved;
-  } catch(e) { return JSON.parse(JSON.stringify(defaultData)); }
+    firebase.initializeApp(FIREBASE_CONFIG);
+    firestore = firebase.firestore();
+    docRef = firestore.collection("cursos").doc(DB_DOC);
+
+    // Escuchar cambios en tiempo real
+    docRef.onSnapshot(snap => {
+      if (snap.exists) {
+        DB = migrateData(snap.data());
+      } else {
+        // Primera vez: guardar datos por defecto
+        const initial = migrateData(JSON.parse(JSON.stringify(defaultData)));
+        docRef.set(flattenDB(initial));
+        DB = initial;
+      }
+      showLoading(false);
+      setSyncStatus(true);
+      if (document.getElementById('app').style.display !== 'none') {
+        renderAll();
+        const activePage = document.querySelector('.page.active');
+        if (activePage) renderPage(activePage.id.replace('page-',''));
+      }
+    }, err => {
+      console.error("Snapshot error:", err);
+      showLoading(false);
+      setSyncStatus(false);
+    });
+
+  } catch(e) {
+    console.error("Firebase init error:", e);
+    showLoading(false);
+    setSyncStatus(false);
+    showFirebaseError();
+  }
 }
-function saveData() { localStorage.setItem(STORAGE_KEY, JSON.stringify(DB)); }
+
+// Convierte arrays a formato JSON string para evitar límites de Firestore
+function flattenDB(data) {
+  return {
+    delegados:      JSON.stringify(data.delegados || []),
+    alumnos:        JSON.stringify(data.alumnos || []),
+    cuotas:         JSON.stringify(data.cuotas || []),
+    pagos:          JSON.stringify(data.pagos || []),
+    gastos:         JSON.stringify(data.gastos || []),
+    ingresosExtras: JSON.stringify(data.ingresosExtras || []),
+    log:            JSON.stringify((data.log || []).slice(0, 100)),
+    saldoInicial:   data.saldoInicial || 0,
+    saldoInicialDesc: data.saldoInicialDesc || ''
+  };
+}
+
+function migrateData(data) {
+  // Si los arrays vienen como string JSON (nuestro formato), parsearlos
+  const parse = (v, def) => {
+    if (Array.isArray(v)) return v;
+    if (typeof v === 'string') { try { return JSON.parse(v); } catch(e) { return def; } }
+    return def;
+  };
+  return {
+    delegados:       parse(data.delegados, JSON.parse(JSON.stringify(defaultData.delegados))),
+    alumnos:         parse(data.alumnos,   JSON.parse(JSON.stringify(defaultData.alumnos))),
+    cuotas:          parse(data.cuotas,    []),
+    pagos:           parse(data.pagos,     []),
+    gastos:          parse(data.gastos,    []),
+    ingresosExtras:  parse(data.ingresosExtras, []),
+    log:             parse(data.log,       []),
+    saldoInicial:    Number(data.saldoInicial || 0),
+    saldoInicialDesc: data.saldoInicialDesc || ''
+  };
+}
+
+async function saveData() {
+  if (!docRef) return;
+  // Debounce: espera 500ms para no saturar Firebase con muchas escrituras seguidas
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(async () => {
+    try {
+      await docRef.set(flattenDB(DB));
+      setSyncStatus(true);
+    } catch(e) {
+      console.error("Error guardando:", e);
+      setSyncStatus(false);
+    }
+  }, 500);
+}
+
+function setSyncStatus(ok) {
+  const dot  = document.getElementById('sync-dot');
+  const text = document.getElementById('sync-text');
+  if (!dot) return;
+  dot.style.background  = ok ? '#4ade80' : '#f87171';
+  text.textContent      = ok ? 'En línea' : 'Error sync';
+}
+
 function addLog(accion) {
+  if (!DB.log) DB.log = [];
   DB.log.unshift({ ts: new Date().toISOString(), user: currentUser || 'Público', accion });
   if (DB.log.length > 200) DB.log = DB.log.slice(0, 200);
   saveData();
 }
 
-let DB = loadData();
+function showLoading(show, msg) {
+  let el = document.getElementById('loading-overlay');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'loading-overlay';
+    el.style.cssText = 'position:fixed;inset:0;background:rgba(13,34,64,.85);z-index:9999;display:flex;flex-direction:column;align-items:center;justify-content:center;color:white;font-family:DM Sans,sans-serif;gap:16px';
+    el.innerHTML = '<div style="font-size:2rem">⏳</div><div id="loading-msg" style="font-size:1rem;opacity:.85"></div>';
+    document.body.appendChild(el);
+  }
+  el.style.display = show ? 'flex' : 'none';
+  if (msg) document.getElementById('loading-msg').textContent = msg;
+}
+
+function showFirebaseError() {
+  const el = document.getElementById('login-screen');
+  el.innerHTML = `<div style="background:white;border-radius:20px;padding:40px;max-width:460px;text-align:center;margin:20px">
+    <div style="font-size:3rem;margin-bottom:16px">⚙️</div>
+    <h2 style="font-family:Fraunces,serif;color:#0d2240;margin-bottom:12px">Configuración pendiente</h2>
+    <p style="color:#8a8f98;margin-bottom:20px;line-height:1.6">Para usar la app necesitas configurar Firebase. Reemplaza los valores en <code style="background:#f0f0f0;padding:2px 6px;border-radius:4px">FIREBASE_CONFIG</code> en el archivo HTML con los datos de tu proyecto.</p>
+    <a href="https://console.firebase.google.com" target="_blank" style="display:inline-block;background:#0d2240;color:white;padding:12px 24px;border-radius:10px;text-decoration:none;font-weight:600">Ir a Firebase Console →</a>
+  </div>`;
+}
+
+let DB = migrateData(JSON.parse(JSON.stringify(defaultData)));
 let currentUser = null;
 let isDelegate = false;
 let editingCuotaId = null;
@@ -1256,6 +1386,9 @@ function downloadCSV(rows, filename) {
 //  INIT
 // ═══════════════════════════════════════════════
 populateDelegadoSelect();
+initFirebase();
+window.addEventListener('online',  () => { document.getElementById('sync-dot').style.background='#4ade80'; document.getElementById('sync-text').textContent='En línea'; });
+window.addEventListener('offline', () => { document.getElementById('sync-dot').style.background='#f87171'; document.getElementById('sync-text').textContent='Sin conexión'; });
 </script>
 </body>
 </html>
