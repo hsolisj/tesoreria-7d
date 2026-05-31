@@ -573,12 +573,14 @@ async function initFirebase() {
     // Escuchar cambios en tiempo real
     docRef.onSnapshot(snap => {
       if (snap.exists) {
-        DB = migrateData(snap.data());
+        const remoto = snap.data();
+        // Solo actualizar si hay datos reales (alumnos o cuotas o pagos)
+        // Nunca sobreescribir con defaults
+        DB = migrateData(remoto);
       } else {
-        // Primera vez: guardar datos por defecto
-        const initial = migrateData(JSON.parse(JSON.stringify(defaultData)));
-        docRef.set(flattenDB(initial));
-        DB = initial;
+        // Documento no existe aún — crear solo con alumnos y delegados, sin sobreescribir nada
+        DB = migrateData(JSON.parse(JSON.stringify(defaultData)));
+        docRef.set(flattenDB(DB)).catch(e => console.error("Error creando doc:", e));
       }
       showLoading(false);
       setSyncStatus(true);
@@ -735,19 +737,9 @@ function enterApp() {
   document.getElementById('nav-log').style.display = isDelegate ? 'flex' : 'none';
   document.getElementById('nav-reportes').style.display = 'flex';
   if (currentUser) addLog('Inició sesión');
-  // Si Firebase ya tiene datos, renderizar inmediatamente
-  // Si no, el onSnapshot lo hará apenas lleguen
-  if (docRef) {
-    docRef.get().then(snap => {
-      if (snap.exists) {
-        DB = migrateData(snap.data());
-      }
-      renderAll();
-      renderPage('resumen');
-    });
-  } else {
-    renderAll();
-  }
+  // El onSnapshot ya mantiene DB actualizado — solo renderizar
+  renderAll();
+  renderPage('resumen');
 }
 
 function doLogout() {
