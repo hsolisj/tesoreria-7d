@@ -735,7 +735,19 @@ function enterApp() {
   document.getElementById('nav-log').style.display = isDelegate ? 'flex' : 'none';
   document.getElementById('nav-reportes').style.display = 'flex';
   if (currentUser) addLog('Inició sesión');
-  renderAll();
+  // Si Firebase ya tiene datos, renderizar inmediatamente
+  // Si no, el onSnapshot lo hará apenas lleguen
+  if (docRef) {
+    docRef.get().then(snap => {
+      if (snap.exists) {
+        DB = migrateData(snap.data());
+      }
+      renderAll();
+      renderPage('resumen');
+    });
+  } else {
+    renderAll();
+  }
 }
 
 function doLogout() {
